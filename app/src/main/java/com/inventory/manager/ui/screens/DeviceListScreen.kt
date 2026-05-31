@@ -25,18 +25,37 @@ import com.inventory.manager.ui.components.EmptyState
 import com.inventory.manager.ui.components.StatusBadge
 import com.inventory.manager.utils.DateUtils
 import com.inventory.manager.viewmodel.DeviceViewModel
+import androidx.activity.compose.rememberLauncherForActivityResult
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceListScreen(
     onNavigateToDetail: (Int) -> Unit,
-    onNavigateToAdd: () -> Unit
+    onNavigateToAdd: (String?) -> Unit
 ) {
     val app = LocalContext.current.applicationContext as InventoryApp
     val vm: DeviceViewModel = viewModel(factory = DeviceViewModel.factory(app))
     val state by vm.uiState.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
 
     var showFilterSheet by remember { mutableStateOf(false) }
+    var scannedNotFoundSerial by remember { mutableStateOf<String?>(null) }
+
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        result.contents?.let { serial ->
+            scope.launch {
+                val device = app.deviceRepository.getBySerialNumber(serial)
+                if (device != null) {
+                    onNavigateToDetail(device.id)
+                } else {
+                    scannedNotFoundSerial = serial
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -48,6 +67,16 @@ fun DeviceListScreen(
                         titleContentColor = MaterialTheme.colorScheme.onPrimary
                     ),
                     actions = {
+                        IconButton(onClick = {
+                            scanLauncher.launch(ScanOptions().apply {
+                                setDesiredBarcodeFormats(ScanOptions.ONE_D_CODE_TYPES)
+                                setPrompt("对准设备条形码")
+                                setBeepEnabled(true)
+                                setOrientationLocked(false)
+                            })
+                        }) {
+                            Icon(Icons.Default.QrCodeScanner, "扫码", tint = MaterialTheme.colorScheme.onPrimary)
+                        }
                         IconButton(onClick = { showFilterSheet = true }) {
                             Icon(Icons.Default.FilterList, "筛选", tint = MaterialTheme.colorScheme.onPrimary)
                         }
@@ -73,7 +102,7 @@ fun DeviceListScreen(
             }
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = onNavigateToAdd) {
+            FloatingActionButton(onClick = { onNavigateToAdd(null) }) {
                 Icon(Icons.Default.Add, "添加设备")
             }
         }
@@ -104,6 +133,22 @@ fun DeviceListScreen(
                 showFilterSheet = false
             },
             onDismiss = { showFilterSheet = false }
+        )
+    }
+
+    scannedNotFoundSerial?.let { serial ->
+        AlertDialog(
+            onDismissRequest = { scannedNotFoundSerial = null },
+            title = { Text("未找到设备") },
+            text = { Text("序列号「$serial」在库中不存在，是否新建入库？") },
+            confirmButton = {
+                TextButton(onClick = { onNavigateToAdd(serial); scannedNotFoundSerial = null }) {
+                    Text("去入库")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { scannedNotFoundSerial = null }) { Text("取消") }
+            }
         )
     }
 }

@@ -61,6 +61,9 @@ interface DeviceDao {
     @Query("SELECT * FROM devices WHERE assetCode = :code ORDER BY createdAt DESC LIMIT 1")
     suspend fun getByAssetCode(code: String): Device?
 
+    @Query("SELECT * FROM devices WHERE serialNumber = :serialNumber ORDER BY CASE status WHEN 'SCRAPPED' THEN 1 ELSE 0 END, createdAt DESC LIMIT 1")
+    suspend fun getBySerialNumber(serialNumber: String): Device?
+
     @Query("SELECT * FROM devices WHERE assetCode = :code AND status != 'SCRAPPED' AND id != :excludeId LIMIT 1")
     suspend fun getByAssetCodeNonScrapped(code: String, excludeId: Int = -1): Device?
 

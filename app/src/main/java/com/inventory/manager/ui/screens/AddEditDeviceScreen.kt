@@ -7,6 +7,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -18,12 +20,15 @@ import com.inventory.manager.InventoryApp
 import com.inventory.manager.data.database.entity.*
 import com.inventory.manager.utils.DateUtils
 import com.inventory.manager.viewmodel.DeviceViewModel
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddEditDeviceScreen(
     deviceId: Int? = null,
+    initialSerialNumber: String? = null,
     onNavigateBack: () -> Unit
 ) {
     val app = LocalContext.current.applicationContext as InventoryApp
@@ -36,7 +41,11 @@ fun AddEditDeviceScreen(
     var brand by remember { mutableStateOf("") }
     var model by remember { mutableStateOf("") }
     var assetCode by remember { mutableStateOf("") }
-    var serialNumber by remember { mutableStateOf("") }
+    var serialNumber by remember { mutableStateOf(initialSerialNumber ?: "") }
+
+    val serialScanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        result.contents?.let { serialNumber = it }
+    }
     var purchaseDateStr by remember { mutableStateOf(DateUtils.formatDate(System.currentTimeMillis())) }
     var warrantyDateStr by remember { mutableStateOf("") }
     var priceStr by remember { mutableStateOf("") }
@@ -186,12 +195,30 @@ fun AddEditDeviceScreen(
                 }
             }
 
-            OutlinedTextField(
-                value = serialNumber,
-                onValueChange = { serialNumber = it },
-                label = { Text("序列号") },
-                modifier = Modifier.fillMaxWidth()
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = serialNumber,
+                    onValueChange = { serialNumber = it },
+                    label = { Text("序列号") },
+                    modifier = Modifier.weight(1f)
+                )
+                FilledTonalIconButton(
+                    onClick = {
+                        serialScanLauncher.launch(ScanOptions().apply {
+                            setDesiredBarcodeFormats(ScanOptions.ONE_D_CODE_TYPES)
+                            setPrompt("扫描序列号条形码")
+                            setBeepEnabled(true)
+                            setOrientationLocked(false)
+                        })
+                    }
+                ) {
+                    Icon(Icons.Default.QrCodeScanner, "扫描序列号")
+                }
+            }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(

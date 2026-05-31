@@ -24,6 +24,8 @@ import com.inventory.manager.ui.components.ConfirmDialog
 import com.inventory.manager.ui.components.EmptyState
 import com.inventory.manager.ui.components.StatusBadge
 import com.inventory.manager.viewmodel.StaffViewModel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,6 +56,11 @@ fun StaffListScreen(onNavigateBack: () -> Unit) {
         state.message?.let { snackbarHostState.showSnackbar(it); vm.clearMessage() }
     }
 
+    val generateCode: suspend () -> String = {
+        val codes = app.staffRepository.getAllStaff().first().map { it.staffCode }
+        vm.generateStaffCode(codes)
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -80,7 +87,7 @@ fun StaffListScreen(onNavigateBack: () -> Unit) {
             OutlinedTextField(
                 value = state.searchQuery,
                 onValueChange = { vm.setSearchQuery(it) },
-                placeholder = { Text("搜索姓名、部门、电话...") },
+                placeholder = { Text("搜索姓名、编号、部门、电话...") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
                 trailingIcon = {
                     if (state.searchQuery.isNotBlank()) {
@@ -150,14 +157,16 @@ fun StaffListScreen(onNavigateBack: () -> Unit) {
         StaffEditDialog(
             staff = null,
             onSave = { vm.insertStaff(it); showAddDialog = false },
-            onDismiss = { showAddDialog = false }
+            onDismiss = { showAddDialog = false },
+            onGenerateCode = generateCode
         )
     }
     editingStaff?.let { s ->
         StaffEditDialog(
             staff = s,
             onSave = { vm.updateStaff(it); editingStaff = null },
-            onDismiss = { editingStaff = null }
+            onDismiss = { editingStaff = null },
+            onGenerateCode = generateCode
         )
     }
     deletingStaff?.let { s ->
@@ -190,7 +199,23 @@ private fun StaffCard(
                 Icon(Icons.Default.Person, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(staff.name, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(staff.name, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                        if (staff.staffCode.isNotBlank()) {
+                            Spacer(Modifier.width(6.dp))
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.secondaryContainer
+                            ) {
+                                Text(
+                                    staff.staffCode,
+                                    fontSize = 10.sp,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            }
+                        }
+                    }
                     if (staff.department.isNotBlank()) {
                         Text(staff.department, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(0.6f))
                     }
@@ -254,17 +279,41 @@ private fun DeviceChip(device: Device) {
 }
 
 @Composable
-private fun StaffEditDialog(staff: Staff?, onSave: (Staff) -> Unit, onDismiss: () -> Unit) {
+private fun StaffEditDialog(
+    staff: Staff?,
+    onSave: (Staff) -> Unit,
+    onDismiss: () -> Unit,
+    onGenerateCode: suspend () -> String
+) {
+    var staffCode by remember { mutableStateOf(staff?.staffCode ?: "") }
     var name by remember { mutableStateOf(staff?.name ?: "") }
     var department by remember { mutableStateOf(staff?.department ?: "") }
     var phone by remember { mutableStateOf(staff?.phone ?: "") }
     var notes by remember { mutableStateOf(staff?.notes ?: "") }
+    val scope = rememberCoroutineScope()
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (staff == null) "添加员工" else "编辑员工") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = staffCode,
+                        onValueChange = { staffCode = it },
+                        label = { Text("员工编号") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true
+                    )
+                    OutlinedButton(
+                        onClick = { scope.launch { staffCode = onGenerateCode() } },
+                        modifier = Modifier.padding(top = 4.dp)
+                    ) { Text("自动") }
+                }
                 OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("姓名 *") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = department, onValueChange = { department = it }, label = { Text("部门") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = phone, onValueChange = { phone = it }, label = { Text("电话") }, modifier = Modifier.fillMaxWidth())
@@ -274,7 +323,14 @@ private fun StaffEditDialog(staff: Staff?, onSave: (Staff) -> Unit, onDismiss: (
         confirmButton = {
             TextButton(
                 onClick = {
-                    onSave(Staff(id = staff?.id ?: 0, name = name.trim(), department = department.trim(), phone = phone.trim(), notes = notes.trim()))
+                    onSave(Staff(
+                        id = staff?.id ?: 0,
+                        staffCode = staffCode.trim(),
+                        name = name.trim(),
+                        department = department.trim(),
+                        phone = phone.trim(),
+                        notes = notes.trim()
+                    ))
                 },
                 enabled = name.isNotBlank()
             ) { Text("保存") }

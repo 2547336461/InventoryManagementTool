@@ -9,6 +9,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -25,6 +27,7 @@ import com.inventory.manager.InventoryApp
 import com.inventory.manager.data.database.entity.Device
 import com.inventory.manager.data.database.entity.DeviceCondition
 import com.inventory.manager.data.database.entity.RecordType
+import com.inventory.manager.data.database.entity.Staff
 import com.inventory.manager.data.database.entity.StockRecord
 import com.inventory.manager.viewmodel.DeviceViewModel
 import com.inventory.manager.viewmodel.RecordViewModel
@@ -52,6 +55,46 @@ fun MoreScreen(
         statusMessage?.let { snackbarHostState.showSnackbar(it); statusMessage = null }
     }
 
+    val importStaffLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                var count = 0
+                var skipped = 0
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val lines = stream.bufferedReader(Charsets.UTF_8).readLines()
+                    val existingStaff = app.staffRepository.getActiveStaff().first()
+                    val existingCodes = existingStaff.map { it.staffCode }.filter { it.isNotBlank() }.toHashSet()
+                    val existingNames = existingStaff.map { it.name }.toHashSet()
+                    lines.drop(1).forEach { line ->
+                        if (line.isBlank()) return@forEach
+                        val cols = parseCsvLine(line)
+                        if (cols.size < 2) return@forEach
+                        val staffCode = cols[0].trim()
+                        val name = cols[1].trim()
+                        if (name.isBlank()) return@forEach
+                        // 优先按员工编号去重，无编号时按姓名去重
+                        if (staffCode.isNotBlank() && existingCodes.contains(staffCode)) { skipped++; return@forEach }
+                        if (staffCode.isBlank() && existingNames.contains(name)) { skipped++; return@forEach }
+                        val department = if (cols.size > 2) cols[2].trim() else ""
+                        val phone = if (cols.size > 3) cols[3].trim() else ""
+                        val notes = if (cols.size > 4) cols[4].trim() else ""
+                        app.staffRepository.insert(Staff(staffCode = staffCode, name = name, department = department, phone = phone, notes = notes))
+                        existingCodes.add(staffCode)
+                        existingNames.add(name)
+                        count++
+                    }
+                }
+                statusMessage = if (skipped > 0) "导入 $count 名员工，跳过 $skipped 条重名"
+                               else "成功导入 $count 名员工"
+            } catch (e: Exception) {
+                statusMessage = "导入失败: ${e.message}"
+            }
+        }
+    }
+
     val importRecordsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -76,7 +119,13 @@ fun MoreScreen(
                         val cost = cols[7].trim().toDoubleOrNull()
                         val description = if (cols.size > 8) cols[8].trim() else ""
                         val notes = if (cols.size > 9) cols[9].trim() else ""
-                        val device = app.deviceRepository.getByAssetCode(deviceAssetCode)
+                        val serialNumber = if (cols.size > 10) cols[10].trim() else ""
+                        // 优先按序列号查找（条形码扫描可靠），找不到再按资产编号兜底
+                        val device = if (serialNumber.isNotBlank())
+                            app.deviceRepository.getBySerialNumber(serialNumber)
+                                ?: app.deviceRepository.getByAssetCode(deviceAssetCode)
+                        else
+                            app.deviceRepository.getByAssetCode(deviceAssetCode)
                         if (device == null) { skipped++; return@forEach }
                         app.recordRepository.insert(
                             StockRecord(
@@ -183,7 +232,11 @@ fun MoreScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Spacer(Modifier.height(8.dp))
@@ -231,10 +284,13 @@ fun MoreScreen(
                     scope.launch {
                         try {
                             val records = app.recordRepository.getAll().first()
+                            val serialByCode = app.deviceRepository.getAll().first()
+                                .associateBy({ it.assetCode }, { it.serialNumber })
                             val csv = buildString {
-                                appendLine("操作时间,操作类型,设备名称,资产编号,操作人员,供应商,设备状况,维修费用,描述,备注")
+                                appendLine("操作时间,操作类型,设备名称,资产编号,操作人员,供应商,设备状况,维修费用,描述,备注,序列号")
                                 records.forEach { r ->
-                                    appendLine("${r.operationTime},${r.recordType.label},${r.deviceName},${r.deviceAssetCode},${r.staffName ?: ""},${r.supplier ?: ""},${r.condition?.label ?: ""},${r.cost ?: ""},\"${r.description}\",\"${r.notes}\"")
+                                    val serial = serialByCode[r.deviceAssetCode] ?: ""
+                                    appendLine("${r.operationTime},${r.recordType.label},${r.deviceName},${r.deviceAssetCode},${r.staffName ?: ""},${r.supplier ?: ""},${r.condition?.label ?: ""},${r.cost ?: ""},\"${r.description}\",\"${r.notes}\",$serial")
                                 }
                             }
                             saveCSV(context, "records_export.csv", csv)
@@ -251,6 +307,36 @@ fun MoreScreen(
                 title = "导入操作记录 (CSV)",
                 subtitle = "从导出的记录 CSV 文件恢复历史操作",
                 onClick = { importRecordsLauncher.launch(arrayOf("text/*", "*/*")) }
+            )
+
+            MoreItem(
+                icon = Icons.Default.PersonSearch,
+                title = "导出人员数据 (CSV)",
+                subtitle = "导出所有员工信息到下载目录",
+                onClick = {
+                    scope.launch {
+                        try {
+                            val staffList = app.staffRepository.getActiveStaff().first()
+                            val csv = buildString {
+                                appendLine("员工编号,姓名,部门,电话,备注")
+                                staffList.forEach { s ->
+                                    appendLine("${s.staffCode},${s.name},${s.department},${s.phone},\"${s.notes}\"")
+                                }
+                            }
+                            saveCSV(context, "staff_export.csv", csv)
+                            statusMessage = "人员数据已导出到下载目录"
+                        } catch (e: Exception) {
+                            statusMessage = "导出失败: ${e.message}"
+                        }
+                    }
+                }
+            )
+
+            MoreItem(
+                icon = Icons.Default.GroupAdd,
+                title = "导入人员数据 (CSV)",
+                subtitle = "从 CSV 批量添加员工，重名自动跳过",
+                onClick = { importStaffLauncher.launch(arrayOf("text/*", "*/*")) }
             )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))

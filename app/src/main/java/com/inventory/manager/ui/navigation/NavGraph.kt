@@ -1,5 +1,6 @@
 package com.inventory.manager.ui.navigation
 
+import android.net.Uri
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
@@ -36,7 +37,10 @@ fun MainNavGraph(navController: NavHostController) {
         composable(Screen.Devices.route) {
             DeviceListScreen(
                 onNavigateToDetail = { id -> navController.navigate("device_detail/$id") },
-                onNavigateToAdd = { navController.navigate("add_device") }
+                onNavigateToAdd = { serial ->
+                    if (serial != null) navController.navigate("add_device?serial=${Uri.encode(serial)}")
+                    else navController.navigate("add_device")
+                }
             )
         }
 
@@ -52,9 +56,15 @@ fun MainNavGraph(navController: NavHostController) {
             )
         }
 
-        composable("add_device") {
+        composable(
+            route = "add_device?serial={serial}",
+            arguments = listOf(navArgument("serial") {
+                type = NavType.StringType; nullable = true; defaultValue = null
+            })
+        ) { backStack ->
             AddEditDeviceScreen(
                 deviceId = null,
+                initialSerialNumber = backStack.arguments?.getString("serial"),
                 onNavigateBack = { navController.popBackStack() }
             )
         }

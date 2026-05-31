@@ -64,6 +64,13 @@ class StaffViewModel(
         }
     }
 
+    fun generateStaffCode(existingCodes: List<String>): String {
+        val maxNum = existingCodes
+            .mapNotNull { it.removePrefix("EMP-").toIntOrNull() }
+            .maxOrNull() ?: 0
+        return "EMP-${String.format("%03d", maxNum + 1)}"
+    }
+
     fun getStaffDevices(staffId: Int) = deviceRepo.getByStaff(staffId)
 
     fun clearMessage() { _uiState.update { it.copy(message = null) } }
