@@ -3,6 +3,7 @@ package com.inventory.manager.ui.screens
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -35,8 +36,19 @@ fun StaffListScreen(onNavigateBack: () -> Unit) {
     var editingStaff by remember { mutableStateOf<Staff?>(null) }
     var deletingStaff by remember { mutableStateOf<Staff?>(null) }
     var expandedStaffId by remember { mutableStateOf<Int?>(null) }
+    var selectedDepartment by remember { mutableStateOf<String?>(null) }
 
     val snackbarHostState = remember { SnackbarHostState() }
+
+    val departments = state.staffList.map { it.department }.filter { it.isNotBlank() }.distinct().sorted()
+    val displayedStaff = if (selectedDepartment == null) state.staffList
+                         else state.staffList.filter { it.department == selectedDepartment }
+
+    LaunchedEffect(departments) {
+        if (selectedDepartment != null && selectedDepartment !in departments) {
+            selectedDepartment = null
+        }
+    }
 
     LaunchedEffect(state.message) {
         state.message?.let { snackbarHostState.showSnackbar(it); vm.clearMessage() }
@@ -46,32 +58,90 @@ fun StaffListScreen(onNavigateBack: () -> Unit) {
         topBar = {
             TopAppBar(
                 title = { Text("人员管理", fontWeight = FontWeight.Bold) },
-                navigationIcon = { IconButton(onClick = onNavigateBack) { Icon(Icons.Default.ArrowBack, "返回", tint = MaterialTheme.colorScheme.onPrimary) } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = MaterialTheme.colorScheme.onPrimary)
+                navigationIcon = {
+                    IconButton(onClick = onNavigateBack) {
+                        Icon(Icons.Default.ArrowBack, "返回", tint = MaterialTheme.colorScheme.onPrimary)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimary
+                )
             )
         },
-        floatingActionButton = { FloatingActionButton(onClick = { showAddDialog = true }) { Icon(Icons.Default.PersonAdd, "添加员工") } },
+        floatingActionButton = {
+            FloatingActionButton(onClick = { showAddDialog = true }) {
+                Icon(Icons.Default.PersonAdd, "添加员工")
+            }
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        if (state.staffList.isEmpty()) {
-            EmptyState("暂无员工，点击右下角添加", Modifier.padding(padding).fillMaxSize())
-        } else {
-            LazyColumn(
-                modifier = Modifier.padding(padding).padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                item { Spacer(Modifier.height(8.dp)) }
-                items(state.staffList, key = { it.id }) { staff ->
-                    StaffCard(
-                        staff = staff,
-                        vm = vm,
-                        isExpanded = expandedStaffId == staff.id,
-                        onToggleExpand = { expandedStaffId = if (expandedStaffId == staff.id) null else staff.id },
-                        onEdit = { editingStaff = staff },
-                        onDelete = { deletingStaff = staff }
-                    )
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            OutlinedTextField(
+                value = state.searchQuery,
+                onValueChange = { vm.setSearchQuery(it) },
+                placeholder = { Text("搜索姓名、部门、电话...") },
+                leadingIcon = { Icon(Icons.Default.Search, null) },
+                trailingIcon = {
+                    if (state.searchQuery.isNotBlank()) {
+                        IconButton(onClick = { vm.setSearchQuery("") }) {
+                            Icon(Icons.Default.Clear, null)
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                singleLine = true
+            )
+
+            if (departments.isNotEmpty()) {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(bottom = 6.dp)
+                ) {
+                    item {
+                        FilterChip(
+                            selected = selectedDepartment == null,
+                            onClick = { selectedDepartment = null },
+                            label = { Text("全部") }
+                        )
+                    }
+                    items(departments) { dept ->
+                        FilterChip(
+                            selected = selectedDepartment == dept,
+                            onClick = { selectedDepartment = if (selectedDepartment == dept) null else dept },
+                            label = { Text(dept) }
+                        )
+                    }
                 }
-                item { Spacer(Modifier.height(72.dp)) }
+            }
+
+            if (displayedStaff.isEmpty()) {
+                EmptyState(
+                    message = if (state.searchQuery.isNotBlank() || selectedDepartment != null)
+                        "无匹配员工" else "暂无员工，点击右下角添加",
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    item { Spacer(Modifier.height(4.dp)) }
+                    items(displayedStaff, key = { it.id }) { staff ->
+                        StaffCard(
+                            staff = staff,
+                            vm = vm,
+                            isExpanded = expandedStaffId == staff.id,
+                            onToggleExpand = {
+                                expandedStaffId = if (expandedStaffId == staff.id) null else staff.id
+                            },
+                            onEdit = { editingStaff = staff },
+                            onDelete = { deletingStaff = staff }
+                        )
+                    }
+                    item { Spacer(Modifier.height(72.dp)) }
+                }
             }
         }
     }
@@ -133,7 +203,11 @@ private fun StaffCard(
                         shape = MaterialTheme.shapes.small,
                         color = MaterialTheme.colorScheme.primaryContainer
                     ) {
-                        Text("${devices.size}台设备", fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
+                        Text(
+                            "${devices.size}台设备",
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                        )
                     }
                 }
                 Spacer(Modifier.width(4.dp))
@@ -156,7 +230,10 @@ private fun StaffCard(
                         Spacer(Modifier.width(4.dp))
                         Text("编辑")
                     }
-                    TextButton(onClick = onDelete, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                    TextButton(
+                        onClick = onDelete,
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
                         Icon(Icons.Default.PersonRemove, null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("移除")

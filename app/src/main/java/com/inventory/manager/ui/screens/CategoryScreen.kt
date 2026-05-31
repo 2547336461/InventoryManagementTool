@@ -31,6 +31,11 @@ fun CategoryScreen(onNavigateBack: () -> Unit) {
     var showAddDialog by remember { mutableStateOf(false) }
     var editingCategory by remember { mutableStateOf<Category?>(null) }
     var deletingCategory by remember { mutableStateOf<Category?>(null) }
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(state.message) {
+        state.message?.let { snackbarHostState.showSnackbar(it); vm.clearMessage() }
+    }
 
     Scaffold(
         topBar = {
@@ -40,7 +45,8 @@ fun CategoryScreen(onNavigateBack: () -> Unit) {
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = MaterialTheme.colorScheme.onPrimary)
             )
         },
-        floatingActionButton = { FloatingActionButton(onClick = { showAddDialog = true }) { Icon(Icons.Default.Add, "添加类型") } }
+        floatingActionButton = { FloatingActionButton(onClick = { showAddDialog = true }) { Icon(Icons.Default.Add, "添加类型") } },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         if (state.categories.isEmpty()) {
             EmptyState("暂无类型", Modifier.padding(padding).fillMaxSize())

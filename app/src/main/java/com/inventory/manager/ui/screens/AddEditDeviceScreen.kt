@@ -30,6 +30,7 @@ fun AddEditDeviceScreen(
     val vm: DeviceViewModel = viewModel(factory = DeviceViewModel.factory(app))
     val state by vm.uiState.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     var selectedCategory by remember { mutableStateOf<Category?>(null) }
     var brand by remember { mutableStateOf("") }
@@ -43,6 +44,44 @@ fun AddEditDeviceScreen(
     var supplier by remember { mutableStateOf("") }
     var categoryExpanded by remember { mutableStateOf(false) }
     var initialized by remember { mutableStateOf(false) }
+
+    // Derived validation
+    val purchaseDateError: String? = if (purchaseDateStr.isNotBlank() && DateUtils.parseDate(purchaseDateStr) == null)
+        "格式无效，请使用 yyyy-MM-dd" else null
+
+    val warrantyDateError: String? = if (warrantyDateStr.isNotBlank()) {
+        val wd = DateUtils.parseDate(warrantyDateStr)
+        when {
+            wd == null -> "格式无效，请使用 yyyy-MM-dd"
+            else -> {
+                val pd = DateUtils.parseDate(purchaseDateStr)
+                if (pd != null && wd <= pd) "保修到期应晚于购入日期" else null
+            }
+        }
+    } else null
+
+    val priceError: String? = if (priceStr.isNotBlank()) {
+        val v = priceStr.toDoubleOrNull()
+        when {
+            v == null -> "请输入有效数字"
+            v < 0 -> "价格不能为负数"
+            else -> null
+        }
+    } else null
+
+    LaunchedEffect(state.navigateBack) {
+        if (state.navigateBack) {
+            vm.clearNavigateBack()
+            onNavigateBack()
+        }
+    }
+
+    LaunchedEffect(state.message) {
+        state.message?.let {
+            snackbarHostState.showSnackbar(it)
+            vm.clearMessage()
+        }
+    }
 
     LaunchedEffect(deviceId, state.devices) {
         if (!initialized && deviceId != null) {
@@ -74,7 +113,8 @@ fun AddEditDeviceScreen(
     val isEditMode = deviceId != null
     val title = if (isEditMode) "编辑设备" else "新设备入库"
 
-    fun validate() = brand.isNotBlank() && model.isNotBlank() && assetCode.isNotBlank() && selectedCategory != null
+    fun validate() = brand.isNotBlank() && model.isNotBlank() && assetCode.isNotBlank() &&
+        selectedCategory != null && purchaseDateError == null && warrantyDateError == null && priceError == null
 
     Scaffold(
         topBar = {
@@ -90,7 +130,8 @@ fun AddEditDeviceScreen(
                     titleContentColor = MaterialTheme.colorScheme.onPrimary
                 )
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp).verticalScroll(rememberScrollState()),
@@ -145,14 +186,45 @@ fun AddEditDeviceScreen(
                 }
             }
 
-            OutlinedTextField(value = serialNumber, onValueChange = { serialNumber = it }, label = { Text("序列号") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                value = serialNumber,
+                onValueChange = { serialNumber = it },
+                label = { Text("序列号") },
+                modifier = Modifier.fillMaxWidth()
+            )
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(value = purchaseDateStr, onValueChange = { purchaseDateStr = it }, label = { Text("购入日期\n(yyyy-MM-dd)") }, modifier = Modifier.weight(1f))
-                OutlinedTextField(value = warrantyDateStr, onValueChange = { warrantyDateStr = it }, label = { Text("保修到期\n(yyyy-MM-dd)") }, modifier = Modifier.weight(1f))
+                OutlinedTextField(
+                    value = purchaseDateStr,
+                    onValueChange = { purchaseDateStr = it },
+                    label = { Text("购入日期 *") },
+                    placeholder = { Text("yyyy-MM-dd") },
+                    isError = purchaseDateError != null,
+                    supportingText = purchaseDateError?.let { err -> { Text(err) } },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = warrantyDateStr,
+                    onValueChange = { warrantyDateStr = it },
+                    label = { Text("保修到期") },
+                    placeholder = { Text("yyyy-MM-dd") },
+                    isError = warrantyDateError != null,
+                    supportingText = warrantyDateError?.let { err -> { Text(err) } },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
             }
 
-            OutlinedTextField(value = priceStr, onValueChange = { priceStr = it }, label = { Text("购入价格（元）") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                value = priceStr,
+                onValueChange = { priceStr = it },
+                label = { Text("购入价格（元）") },
+                isError = priceError != null,
+                supportingText = priceError?.let { err -> { Text(err) } },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
 
             if (!isEditMode) {
                 OutlinedTextField(value = supplier, onValueChange = { supplier = it }, label = { Text("来源/供应商") }, modifier = Modifier.fillMaxWidth())
@@ -184,7 +256,6 @@ fun AddEditDeviceScreen(
                                     price = price,
                                     notes = notes.trim()
                                 ))
-                                onNavigateBack()
                             }
                         }
                     } else {
@@ -204,7 +275,6 @@ fun AddEditDeviceScreen(
                             supplier = supplier.trim(),
                             notes = ""
                         )
-                        onNavigateBack()
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),

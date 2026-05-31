@@ -15,7 +15,7 @@ interface StaffDao {
     @Query("SELECT * FROM staff WHERE id = :id")
     suspend fun getById(id: Int): Staff?
 
-    @Query("SELECT * FROM staff WHERE name LIKE '%' || :query || '%' AND isActive = 1")
+    @Query("SELECT * FROM staff WHERE (name LIKE '%' || :query || '%' OR department LIKE '%' || :query || '%' OR phone LIKE '%' || :query || '%') AND isActive = 1")
     fun searchStaff(query: String): Flow<List<Staff>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

@@ -21,4 +21,9 @@ class DeviceRepository(private val dao: DeviceDao) {
     suspend fun insert(device: Device): Long = dao.insert(device)
     suspend fun update(device: Device) = dao.update(device)
     suspend fun delete(device: Device) = dao.delete(device)
+    suspend fun getByAssetCode(code: String): Device? = dao.getByAssetCode(code)
+    suspend fun getByAssetCodeNonScrapped(code: String, excludeId: Int = -1): Device? =
+        dao.getByAssetCodeNonScrapped(code, excludeId)
+    suspend fun countByCategorySync(categoryId: Int): Int = dao.countByCategorySync(categoryId)
+    suspend fun getInUseByStaff(staffId: Int): List<Device> = dao.getInUseByStaff(staffId)
 }

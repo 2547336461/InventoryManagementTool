@@ -57,4 +57,16 @@ interface DeviceDao {
 
     @Query("SELECT * FROM devices WHERE currentStaffId = :staffId")
     fun getByStaff(staffId: Int): Flow<List<Device>>
+
+    @Query("SELECT * FROM devices WHERE assetCode = :code ORDER BY createdAt DESC LIMIT 1")
+    suspend fun getByAssetCode(code: String): Device?
+
+    @Query("SELECT * FROM devices WHERE assetCode = :code AND status != 'SCRAPPED' AND id != :excludeId LIMIT 1")
+    suspend fun getByAssetCodeNonScrapped(code: String, excludeId: Int = -1): Device?
+
+    @Query("SELECT COUNT(*) FROM devices WHERE categoryId = :categoryId")
+    suspend fun countByCategorySync(categoryId: Int): Int
+
+    @Query("SELECT * FROM devices WHERE currentStaffId = :staffId AND status = 'IN_USE'")
+    suspend fun getInUseByStaff(staffId: Int): List<Device>
 }

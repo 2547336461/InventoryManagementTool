@@ -1,9 +1,12 @@
 package com.inventory.manager.ui.screens
 
 import android.content.ContentValues
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -19,6 +22,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.inventory.manager.InventoryApp
+import com.inventory.manager.data.database.entity.Device
+import com.inventory.manager.data.database.entity.DeviceCondition
+import com.inventory.manager.data.database.entity.RecordType
+import com.inventory.manager.data.database.entity.StockRecord
 import com.inventory.manager.viewmodel.DeviceViewModel
 import com.inventory.manager.viewmodel.RecordViewModel
 import kotlinx.coroutines.flow.first
@@ -38,23 +45,147 @@ fun MoreScreen(
     val recordVm: RecordViewModel = viewModel(factory = RecordViewModel.factory(app))
     val scope = rememberCoroutineScope()
 
-    var exportMessage by remember { mutableStateOf<String?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(exportMessage) {
-        exportMessage?.let { snackbarHostState.showSnackbar(it); exportMessage = null }
+    LaunchedEffect(statusMessage) {
+        statusMessage?.let { snackbarHostState.showSnackbar(it); statusMessage = null }
+    }
+
+    val importRecordsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                var count = 0
+                var skipped = 0
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val lines = stream.bufferedReader(Charsets.UTF_8).readLines()
+                    lines.drop(1).forEach { line ->
+                        if (line.isBlank()) return@forEach
+                        val cols = parseCsvLine(line)
+                        if (cols.size < 8) return@forEach
+                        val operationTime = cols[0].trim().toLongOrNull() ?: return@forEach
+                        val recordType = RecordType.entries.find { it.label == cols[1].trim() } ?: return@forEach
+                        val deviceName = cols[2].trim()
+                        val deviceAssetCode = cols[3].trim()
+                        val staffName = cols[4].trim().takeIf { it.isNotBlank() }
+                        val supplier = cols[5].trim().takeIf { it.isNotBlank() }
+                        val condition = DeviceCondition.entries.find { it.label == cols[6].trim() }
+                        val cost = cols[7].trim().toDoubleOrNull()
+                        val description = if (cols.size > 8) cols[8].trim() else ""
+                        val notes = if (cols.size > 9) cols[9].trim() else ""
+                        val device = app.deviceRepository.getByAssetCode(deviceAssetCode)
+                        if (device == null) { skipped++; return@forEach }
+                        app.recordRepository.insert(
+                            StockRecord(
+                                deviceId = device.id,
+                                deviceName = deviceName.ifBlank { device.displayName },
+                                deviceAssetCode = deviceAssetCode,
+                                recordType = recordType,
+                                staffName = staffName,
+                                operationTime = operationTime,
+                                condition = condition,
+                                cost = cost,
+                                supplier = supplier,
+                                description = description,
+                                notes = notes
+                            )
+                        )
+                        count++
+                    }
+                }
+                statusMessage = if (skipped > 0) "导入 $count 条记录，跳过 $skipped 条（设备不存在）"
+                               else "成功导入 $count 条操作记录"
+            } catch (e: Exception) {
+                statusMessage = "导入失败: ${e.message}"
+            }
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                var count = 0
+                var skipped = 0
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val lines = stream.bufferedReader(Charsets.UTF_8).readLines()
+                    val categories = app.categoryRepository.getAll().first()
+                    lines.drop(1).forEach { line ->
+                        if (line.isBlank()) return@forEach
+                        val cols = parseCsvLine(line)
+                        if (cols.size < 9) return@forEach
+                        val assetCode = cols[0].trim()
+                        val brand = cols[1].trim()
+                        val model = cols[2].trim()
+                        val categoryName = cols[3].trim()
+                        val serialNumber = cols[5].trim()
+                        val purchaseDate = cols[6].trim().toLongOrNull() ?: System.currentTimeMillis()
+                        val warrantyDate = cols[7].trim().toLongOrNull()
+                        val price = cols[8].trim().toDoubleOrNull() ?: 0.0
+                        val notes = if (cols.size > 10) cols[10].trim() else ""
+                        if (brand.isBlank() || model.isBlank()) return@forEach
+                        // 跳过资产编号与现有非报废设备重复的行
+                        if (assetCode.isNotBlank() && app.deviceRepository.getByAssetCodeNonScrapped(assetCode) != null) {
+                            skipped++
+                            return@forEach
+                        }
+                        val category = categories.find { it.name == categoryName }
+                            ?: categories.firstOrNull()
+                            ?: return@forEach
+                        val device = Device(
+                            categoryId = category.id,
+                            categoryName = category.name,
+                            brand = brand,
+                            model = model,
+                            assetCode = assetCode,
+                            serialNumber = serialNumber,
+                            purchaseDate = purchaseDate,
+                            warrantyDate = warrantyDate,
+                            price = price,
+                            notes = notes
+                        )
+                        val deviceId = app.deviceRepository.insert(device).toInt()
+                        app.recordRepository.insert(
+                            StockRecord(
+                                deviceId = deviceId,
+                                deviceName = device.displayName,
+                                deviceAssetCode = device.assetCode,
+                                recordType = RecordType.STOCK_IN,
+                                notes = "CSV导入"
+                            )
+                        )
+                        count++
+                    }
+                }
+                statusMessage = if (skipped > 0) "导入 $count 台，跳过 $skipped 条重复编号"
+                               else "成功导入 $count 台设备"
+            } catch (e: Exception) {
+                statusMessage = "导入失败: ${e.message}"
+            }
+        }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("更多", fontWeight = FontWeight.Bold) },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.primary, titleContentColor = MaterialTheme.colorScheme.onPrimary)
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    titleContentColor = MaterialTheme.colorScheme.onPrimary
+                )
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             Spacer(Modifier.height(8.dp))
 
             MoreItem(icon = Icons.Default.People, title = "人员管理", subtitle = "添加、编辑员工信息", onClick = onNavigateToStaff)
@@ -77,12 +208,19 @@ fun MoreScreen(
                                 }
                             }
                             saveCSV(context, "devices_export.csv", csv)
-                            exportMessage = "设备清单已导出到下载目录"
+                            statusMessage = "设备清单已导出到下载目录"
                         } catch (e: Exception) {
-                            exportMessage = "导出失败: ${e.message}"
+                            statusMessage = "导出失败: ${e.message}"
                         }
                     }
                 }
+            )
+
+            MoreItem(
+                icon = Icons.Default.Upload,
+                title = "导入设备数据 (CSV)",
+                subtitle = "从导出的 CSV 文件恢复/追加设备",
+                onClick = { importLauncher.launch(arrayOf("text/*", "*/*")) }
             )
 
             MoreItem(
@@ -100,12 +238,19 @@ fun MoreScreen(
                                 }
                             }
                             saveCSV(context, "records_export.csv", csv)
-                            exportMessage = "操作记录已导出到下载目录"
+                            statusMessage = "操作记录已导出到下载目录"
                         } catch (e: Exception) {
-                            exportMessage = "导出失败: ${e.message}"
+                            statusMessage = "导出失败: ${e.message}"
                         }
                     }
                 }
+            )
+
+            MoreItem(
+                icon = Icons.Default.FileUpload,
+                title = "导入操作记录 (CSV)",
+                subtitle = "从导出的记录 CSV 文件恢复历史操作",
+                onClick = { importRecordsLauncher.launch(arrayOf("text/*", "*/*")) }
             )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -142,6 +287,21 @@ private fun MoreItem(icon: ImageVector, title: String, subtitle: String, onClick
             Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurface.copy(0.3f))
         }
     }
+}
+
+private fun parseCsvLine(line: String): List<String> {
+    val result = mutableListOf<String>()
+    var inQuote = false
+    val current = StringBuilder()
+    for (ch in line) {
+        when {
+            ch == '"' -> inQuote = !inQuote
+            ch == ',' && !inQuote -> { result.add(current.toString()); current.clear() }
+            else -> current.append(ch)
+        }
+    }
+    result.add(current.toString())
+    return result
 }
 
 private fun saveCSV(context: android.content.Context, filename: String, content: String) {

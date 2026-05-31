@@ -54,6 +54,11 @@ class StaffViewModel(
 
     fun deleteStaff(staff: Staff) {
         viewModelScope.launch {
+            val activeDevices = deviceRepo.getInUseByStaff(staff.id)
+            if (activeDevices.isNotEmpty()) {
+                _uiState.update { it.copy(message = "${staff.name} 还持有 ${activeDevices.size} 台设备，请先完成归还再移除") }
+                return@launch
+            }
             staffRepo.softDelete(staff.id)
             _uiState.update { it.copy(message = "${staff.name} 已移除") }
         }

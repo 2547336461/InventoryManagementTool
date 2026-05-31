@@ -4,7 +4,6 @@ import androidx.lifecycle.*
 import com.inventory.manager.InventoryApp
 import com.inventory.manager.data.database.entity.*
 import com.inventory.manager.data.repository.*
-import com.inventory.manager.utils.DateUtils
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -15,7 +14,8 @@ data class DeviceListUiState(
     val selectedStatus: DeviceStatus? = null,
     val searchQuery: String = "",
     val isLoading: Boolean = false,
-    val message: String? = null
+    val message: String? = null,
+    val navigateBack: Boolean = false
 )
 
 class DeviceViewModel(
@@ -67,6 +67,11 @@ class DeviceViewModel(
 
     fun insertDevice(device: Device, supplier: String, notes: String) {
         viewModelScope.launch {
+            val conflict = deviceRepo.getByAssetCodeNonScrapped(device.assetCode)
+            if (conflict != null) {
+                _uiState.update { it.copy(message = "资产编号「${device.assetCode}」已被其他设备使用") }
+                return@launch
+            }
             val id = deviceRepo.insert(device)
             recordRepo.insert(
                 StockRecord(
@@ -78,11 +83,12 @@ class DeviceViewModel(
                     notes = notes
                 )
             )
-            _uiState.update { it.copy(message = "设备入库成功") }
+            _uiState.update { it.copy(message = "设备入库成功", navigateBack = true) }
         }
     }
 
     fun stockOut(device: Device, staff: Staff, notes: String) {
+        if (device.status != DeviceStatus.IN_STOCK) return
         viewModelScope.launch {
             deviceRepo.update(
                 device.copy(
@@ -107,6 +113,7 @@ class DeviceViewModel(
     }
 
     fun returnDevice(device: Device, condition: DeviceCondition, notes: String) {
+        if (device.status != DeviceStatus.IN_USE) return
         viewModelScope.launch {
             recordRepo.insert(
                 StockRecord(
@@ -132,6 +139,7 @@ class DeviceViewModel(
     }
 
     fun startMaintenance(device: Device, description: String, notes: String) {
+        if (device.status == DeviceStatus.SCRAPPED || device.status == DeviceStatus.MAINTENANCE) return
         viewModelScope.launch {
             deviceRepo.update(device.copy(status = DeviceStatus.MAINTENANCE))
             recordRepo.insert(
@@ -149,6 +157,7 @@ class DeviceViewModel(
     }
 
     fun endMaintenance(device: Device, result: String, cost: Double?, notes: String) {
+        if (device.status != DeviceStatus.MAINTENANCE) return
         viewModelScope.launch {
             deviceRepo.update(device.copy(status = DeviceStatus.IN_STOCK))
             recordRepo.insert(
@@ -167,6 +176,7 @@ class DeviceViewModel(
     }
 
     fun scrapDevice(device: Device, notes: String) {
+        if (device.status == DeviceStatus.SCRAPPED) return
         viewModelScope.launch {
             deviceRepo.update(
                 device.copy(
@@ -189,7 +199,15 @@ class DeviceViewModel(
     }
 
     fun updateDevice(device: Device) {
-        viewModelScope.launch { deviceRepo.update(device) }
+        viewModelScope.launch {
+            val conflict = deviceRepo.getByAssetCodeNonScrapped(device.assetCode, device.id)
+            if (conflict != null) {
+                _uiState.update { it.copy(message = "资产编号「${device.assetCode}」已被其他设备使用") }
+                return@launch
+            }
+            deviceRepo.update(device)
+            _uiState.update { it.copy(navigateBack = true) }
+        }
     }
 
     fun deleteDevice(device: Device) {
@@ -200,6 +218,7 @@ class DeviceViewModel(
     }
 
     fun clearMessage() { _uiState.update { it.copy(message = null) } }
+    fun clearNavigateBack() { _uiState.update { it.copy(navigateBack = false) } }
 
     fun getDeviceRecords(deviceId: Int): Flow<List<StockRecord>> = recordRepo.getByDevice(deviceId)
 
