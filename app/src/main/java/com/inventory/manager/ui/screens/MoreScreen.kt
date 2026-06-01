@@ -78,24 +78,50 @@ fun MoreScreen(
             try {
                 context.contentResolver.openInputStream(uri)?.use { stream ->
                     val bytes = stream.readBytes()
+                    if (bytes.isEmpty()) {
+                        statusMessage = "备份文件为空"
+                        return@launch
+                    }
+
                     val content = if (bytes.size > 2 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()) {
-                        // ZIP 文件
-                        val zipInputStream = java.util.zip.ZipInputStream(bytes.inputStream())
-                        var sqlContent = ""
-                        var entry = zipInputStream.nextEntry
-                        while (entry != null) {
-                            if (entry.name == "backup.sql") {
-                                sqlContent = zipInputStream.bufferedReader(Charsets.UTF_8).readText()
-                                break
+                        // ZIP 文件，提取 backup.sql
+                        try {
+                            val zipInputStream = java.util.zip.ZipInputStream(bytes.inputStream())
+                            var sqlContent = ""
+                            var entry = zipInputStream.nextEntry
+                            while (entry != null) {
+                                if (entry.name == "backup.sql") {
+                                    sqlContent = zipInputStream.bufferedReader(Charsets.UTF_8).readText()
+                                    break
+                                }
+                                entry = zipInputStream.nextEntry
                             }
-                            entry = zipInputStream.nextEntry
+                            zipInputStream.close()
+
+                            if (sqlContent.isEmpty()) {
+                                statusMessage = "ZIP 文件中未找到 backup.sql"
+                                return@launch
+                            }
+                            sqlContent
+                        } catch (e: Exception) {
+                            statusMessage = "解析 ZIP 文件失败: ${e.message}"
+                            return@launch
                         }
-                        zipInputStream.close()
-                        sqlContent
                     } else {
                         // 直接的 SQL 文件
-                        String(bytes, Charsets.UTF_8)
+                        try {
+                            String(bytes, Charsets.UTF_8)
+                        } catch (e: Exception) {
+                            statusMessage = "读取 SQL 文件失败: ${e.message}"
+                            return@launch
+                        }
                     }
+
+                    if (content.isBlank()) {
+                        statusMessage = "备份文件内容为空"
+                        return@launch
+                    }
+
                     restoreFileContent = content
                     showRestoreConfirm = true
                 }
@@ -401,8 +427,8 @@ fun MoreScreen(
             MoreItem(
                 icon = Icons.Default.Restore,
                 title = "数据恢复",
-                subtitle = if (backupState.isRestoring) "恢复中..." else "从备份文件恢复数据",
-                onClick = { restoreLauncher.launch(arrayOf("application/zip", "text/*", "*/*")) }
+                subtitle = if (backupState.isRestoring) "恢复中..." else "从备份文件恢复数据（仅限 .zip）",
+                onClick = { restoreLauncher.launch(arrayOf("application/zip")) }
             )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -527,6 +553,14 @@ fun MoreScreen(
                 TextButton(
                     onClick = {
                         showRestoreConfirm = false
+                        val content = restoreFileContent
+                        restoreFileContent = null
+
+                        if (content == null) {
+                            statusMessage = "恢复文件内容为空"
+                            return@TextButton
+                        }
+
                         scope.launch {
                             try {
                                 // 先创建自动备份
@@ -558,12 +592,10 @@ fun MoreScreen(
                                     File(backupDir, autoBackupFileName).writeText(sqlContent, Charsets.UTF_8)
                                 }
 
-                                // 执行恢复
-                                backupVm.restoreFromBackup(restoreFileContent!!)
-                                restoreFileContent = null
+                                // 执行恢复（不需要额外处理异常，ViewModel 会处理）
+                                backupVm.restoreFromBackup(content)
                             } catch (e: Exception) {
-                                statusMessage = "恢复失败: ${e.message}"
-                                restoreFileContent = null
+                                statusMessage = "创建自动备份失败: ${e.message}"
                             }
                         }
                     }

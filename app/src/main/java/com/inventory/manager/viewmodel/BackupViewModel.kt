@@ -70,9 +70,9 @@ class BackupViewModel(
         }
     }
 
-    fun restoreFromBackup(sqlContent: String, isAutoBackup: Boolean = false): Result<String> {
-        return try {
-            viewModelScope.launch {
+    fun restoreFromBackup(sqlContent: String, isAutoBackup: Boolean = false) {
+        viewModelScope.launch {
+            try {
                 _uiState.update { it.copy(isRestoring = true, backupProgress = "恢复数据中...") }
 
                 // 执行 SQL 恢复
@@ -86,34 +86,47 @@ class BackupViewModel(
 
                     // 执行恢复的 SQL 脚本
                     val statements = sqlContent.split(";")
+                    var successCount = 0
                     statements.forEach { statement ->
                         val trimmed = statement.trim()
                         if (trimmed.isNotEmpty() && !trimmed.startsWith("--") && !trimmed.startsWith("/*")) {
-                            try {
-                                db.execSQL(trimmed)
-                            } catch (e: Exception) {
-                                // 某些 SQL 语句可能失败，例如 BEGIN/COMMIT，跳过
+                            if (!trimmed.startsWith("BEGIN") && !trimmed.startsWith("COMMIT")) {
+                                try {
+                                    db.execSQL(trimmed)
+                                    successCount++
+                                } catch (e: Exception) {
+                                    android.util.Log.e("BackupRestore", "SQL执行失败: $trimmed", e)
+                                }
                             }
                         }
                     }
                     db.setTransactionSuccessful()
-                } finally {
-                    db.endTransaction()
-                }
 
-                val backupType = if (isAutoBackup) "自动备份" else "用户备份"
+                    val backupType = if (isAutoBackup) "自动备份" else "用户备份"
+                    _uiState.update {
+                        it.copy(
+                            isRestoring = false,
+                            backupProgress = null,
+                            message = "✅ 恢复成功\n\n数据已从 $backupType 恢复\n执行了 $successCount 条 SQL 语句"
+                        )
+                    }
+                } catch (e: Exception) {
+                    db.endTransaction()
+                    throw e
+                } finally {
+                    if (db.inTransaction()) {
+                        db.endTransaction()
+                    }
+                }
+            } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
                         isRestoring = false,
                         backupProgress = null,
-                        message = "✅ 恢复成功\n\n数据已从 $backupType 恢复"
+                        message = "❌ 恢复失败\n${e.javaClass.simpleName}: ${e.message}"
                     )
                 }
             }
-            Result.success("Restore started")
-        } catch (e: Exception) {
-            _uiState.update { it.copy(isRestoring = false, message = "❌ 恢复失败: ${e.message}") }
-            Result.failure(e)
         }
     }
 
