@@ -78,15 +78,18 @@ class BackupViewModel(
                 // 执行 SQL 恢复
                 val db = database.openHelper.writableDatabase
                 db.beginTransaction()
+                var successCount = 0
+                var failureCount = 0
+                var failedStatements = mutableListOf<String>()
+
                 try {
-                    // 清空现有数据（除了 categories）
+                    // 清空现有数据（保留预设分类）
                     db.execSQL("DELETE FROM stock_records")
                     db.execSQL("DELETE FROM devices")
                     db.execSQL("DELETE FROM staff")
 
                     // 执行恢复的 SQL 脚本
                     val statements = sqlContent.split(";")
-                    var successCount = 0
                     statements.forEach { statement ->
                         val trimmed = statement.trim()
                         if (trimmed.isNotEmpty() && !trimmed.startsWith("--") && !trimmed.startsWith("/*")) {
@@ -95,7 +98,9 @@ class BackupViewModel(
                                     db.execSQL(trimmed)
                                     successCount++
                                 } catch (e: Exception) {
-                                    android.util.Log.e("BackupRestore", "SQL执行失败: $trimmed", e)
+                                    failureCount++
+                                    failedStatements.add(trimmed.take(100))
+                                    android.util.Log.e("BackupRestore", "SQL执行失败: $trimmed\n原因: ${e.message}", e)
                                 }
                             }
                         }
@@ -103,15 +108,21 @@ class BackupViewModel(
                     db.setTransactionSuccessful()
 
                     val backupType = if (isAutoBackup) "自动备份" else "用户备份"
+                    val message = if (failureCount == 0) {
+                        "✅ 恢复成功\n\n数据已从 $backupType 恢复\n成功执行 $successCount 条语句"
+                    } else {
+                        "⚠️ 部分恢复\n\n成功: $successCount 条\n失败: $failureCount 条\n\n失败的语句:\n${failedStatements.take(3).joinToString("\n")}" +
+                        if (failedStatements.size > 3) "\n..." else ""
+                    }
+
                     _uiState.update {
                         it.copy(
                             isRestoring = false,
                             backupProgress = null,
-                            message = "✅ 恢复成功\n\n数据已从 $backupType 恢复\n执行了 $successCount 条 SQL 语句"
+                            message = message
                         )
                     }
                 } catch (e: Exception) {
-                    db.endTransaction()
                     throw e
                 } finally {
                     if (db.inTransaction()) {
@@ -123,7 +134,7 @@ class BackupViewModel(
                     it.copy(
                         isRestoring = false,
                         backupProgress = null,
-                        message = "❌ 恢复失败\n${e.javaClass.simpleName}: ${e.message}"
+                        message = "❌ 恢复失败\n${e.javaClass.simpleName}\n${e.message}"
                     )
                 }
             }
@@ -145,25 +156,25 @@ class BackupViewModel(
             append(SqlDumpGenerator.generateHeader())
             append("\n\n")
 
-            // 分类
-            append("-- 分类数据\n")
-            categories.forEach { c ->
-                append("INSERT INTO categories VALUES (${c.id}, ${SqlDumpGenerator.escapeString(c.name)}, ${SqlDumpGenerator.escapeString(c.icon)}, ${c.sortOrder});\n")
+            // 分类（跳过预设的 8 个分类，只保留自定义的）
+            append("-- 自定义分类数据（保留预设分类）\n")
+            categories.filter { it.id > 8 }.forEach { c ->
+                append("INSERT INTO categories (id, name, icon, sortOrder) VALUES (${c.id}, ${SqlDumpGenerator.escapeString(c.name)}, ${SqlDumpGenerator.escapeString(c.icon)}, ${c.sortOrder});\n")
             }
 
             append("\n-- 人员数据\n")
             staff.forEach { s ->
-                append("INSERT INTO staff VALUES (${s.id}, ${SqlDumpGenerator.escapeString(s.staffCode)}, ${SqlDumpGenerator.escapeString(s.name)}, ${SqlDumpGenerator.escapeString(s.department)}, ${SqlDumpGenerator.escapeString(s.phone)}, ${SqlDumpGenerator.escapeString(s.notes)}, ${if (s.isActive) 1 else 0});\n")
+                append("INSERT INTO staff (id, staffCode, name, department, phone, notes, isActive) VALUES (${s.id}, ${SqlDumpGenerator.escapeString(s.staffCode)}, ${SqlDumpGenerator.escapeString(s.name)}, ${SqlDumpGenerator.escapeString(s.department)}, ${SqlDumpGenerator.escapeString(s.phone)}, ${SqlDumpGenerator.escapeString(s.notes)}, ${if (s.isActive) 1 else 0});\n")
             }
 
             append("\n-- 设备数据\n")
             devices.forEach { d ->
-                append("INSERT INTO devices VALUES (${d.id}, ${d.categoryId}, ${SqlDumpGenerator.escapeString(d.categoryName)}, ${SqlDumpGenerator.escapeString(d.brand)}, ${SqlDumpGenerator.escapeString(d.model)}, ${SqlDumpGenerator.escapeString(d.assetCode)}, ${SqlDumpGenerator.escapeString(d.serialNumber)}, ${d.purchaseDate}, ${SqlDumpGenerator.escapeLong(d.warrantyDate)}, ${d.price}, ${SqlDumpGenerator.escapeString(d.status.name)}, ${SqlDumpGenerator.escapeInt(d.currentStaffId)}, ${SqlDumpGenerator.escapeString(d.currentStaffName)}, ${SqlDumpGenerator.escapeString(d.notes)}, ${d.createdAt});\n")
+                append("INSERT INTO devices (id, categoryId, categoryName, brand, model, assetCode, serialNumber, purchaseDate, warrantyDate, price, status, currentStaffId, currentStaffName, notes, createdAt) VALUES (${d.id}, ${d.categoryId}, ${SqlDumpGenerator.escapeString(d.categoryName)}, ${SqlDumpGenerator.escapeString(d.brand)}, ${SqlDumpGenerator.escapeString(d.model)}, ${SqlDumpGenerator.escapeString(d.assetCode)}, ${SqlDumpGenerator.escapeString(d.serialNumber)}, ${d.purchaseDate}, ${SqlDumpGenerator.escapeLong(d.warrantyDate)}, ${d.price}, ${SqlDumpGenerator.escapeString(d.status.name)}, ${SqlDumpGenerator.escapeInt(d.currentStaffId)}, ${SqlDumpGenerator.escapeString(d.currentStaffName)}, ${SqlDumpGenerator.escapeString(d.notes)}, ${d.createdAt});\n")
             }
 
             append("\n-- 操作记录\n")
             records.forEach { r ->
-                append("INSERT INTO stock_records VALUES (${r.id}, ${r.deviceId}, ${SqlDumpGenerator.escapeString(r.deviceName)}, ${SqlDumpGenerator.escapeString(r.deviceAssetCode)}, ${SqlDumpGenerator.escapeString(r.recordType.name)}, ${SqlDumpGenerator.escapeInt(r.staffId)}, ${SqlDumpGenerator.escapeString(r.staffName)}, ${r.operationTime}, ${SqlDumpGenerator.escapeString(r.condition?.name)}, ${SqlDumpGenerator.escapeDouble(r.cost)}, ${SqlDumpGenerator.escapeString(r.supplier)}, ${SqlDumpGenerator.escapeString(r.description)}, ${SqlDumpGenerator.escapeString(r.notes)});\n")
+                append("INSERT INTO stock_records (id, deviceId, deviceName, deviceAssetCode, recordType, staffId, staffName, operationTime, condition, cost, supplier, description, notes) VALUES (${r.id}, ${r.deviceId}, ${SqlDumpGenerator.escapeString(r.deviceName)}, ${SqlDumpGenerator.escapeString(r.deviceAssetCode)}, ${SqlDumpGenerator.escapeString(r.recordType.name)}, ${SqlDumpGenerator.escapeInt(r.staffId)}, ${SqlDumpGenerator.escapeString(r.staffName)}, ${r.operationTime}, ${SqlDumpGenerator.escapeString(r.condition?.name)}, ${SqlDumpGenerator.escapeDouble(r.cost)}, ${SqlDumpGenerator.escapeString(r.supplier)}, ${SqlDumpGenerator.escapeString(r.description)}, ${SqlDumpGenerator.escapeString(r.notes)});\n")
             }
 
             append("\n")
