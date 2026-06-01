@@ -59,6 +59,7 @@ fun MoreScreen(
     var showBackupConfirm by remember { mutableStateOf(false) }
     var showRestoreConfirm by remember { mutableStateOf(false) }
     var restoreFileContent by remember { mutableStateOf<String?>(null) }
+    val timeFormat = remember { SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.getDefault()) }
 
     val backupState by backupVm.uiState.collectAsStateWithLifecycle()
 
@@ -77,51 +78,11 @@ fun MoreScreen(
         scope.launch {
             try {
                 context.contentResolver.openInputStream(uri)?.use { stream ->
-                    val bytes = stream.readBytes()
-                    if (bytes.isEmpty()) {
-                        statusMessage = "备份文件为空"
+                    val content = extractBackupSql(stream)
+                    if (content == null) {
+                        statusMessage = "备份文件无效或为空"
                         return@launch
                     }
-
-                    val content = if (bytes.size > 2 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()) {
-                        // ZIP 文件，提取 backup.sql
-                        try {
-                            val zipInputStream = java.util.zip.ZipInputStream(bytes.inputStream())
-                            var sqlContent = ""
-                            var entry = zipInputStream.nextEntry
-                            while (entry != null) {
-                                if (entry.name == "backup.sql") {
-                                    sqlContent = zipInputStream.bufferedReader(Charsets.UTF_8).readText()
-                                    break
-                                }
-                                entry = zipInputStream.nextEntry
-                            }
-                            zipInputStream.close()
-
-                            if (sqlContent.isEmpty()) {
-                                statusMessage = "ZIP 文件中未找到 backup.sql"
-                                return@launch
-                            }
-                            sqlContent
-                        } catch (e: Exception) {
-                            statusMessage = "解析 ZIP 文件失败: ${e.message}"
-                            return@launch
-                        }
-                    } else {
-                        // 直接的 SQL 文件
-                        try {
-                            String(bytes, Charsets.UTF_8)
-                        } catch (e: Exception) {
-                            statusMessage = "读取 SQL 文件失败: ${e.message}"
-                            return@launch
-                        }
-                    }
-
-                    if (content.isBlank()) {
-                        statusMessage = "备份文件内容为空"
-                        return@launch
-                    }
-
                     restoreFileContent = content
                     showRestoreConfirm = true
                 }
@@ -456,12 +417,7 @@ fun MoreScreen(
                         showBackupConfirm = false
                         scope.launch {
                             try {
-                                val (sqlContent, metadata) = backupVm.generateBackupContent()
-                                val devices = app.deviceRepository.getAll().first()
-                                val staff = app.staffRepository.getAllStaff().first()
-                                val records = app.recordRepository.getAll().first()
-
-                                val timeFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.getDefault())
+                                val (sqlContent, metadata, stats) = backupVm.generateBackupContent()
                                 val timestamp = timeFormat.format(Date())
                                 val zipFileName = "inventory_backup_$timestamp.zip"
 
@@ -520,7 +476,7 @@ fun MoreScreen(
                                     metadataFile.delete()
                                 }
 
-                                backupVm.createBackup(sqlContent, metadata, devices.size, staff.size, records.size)
+                                backupVm.createBackup(sqlContent, metadata, stats.devices, stats.staff, stats.records)
                             } catch (e: Exception) {
                                 statusMessage = "备份失败: ${e.message}"
                             }
@@ -564,8 +520,7 @@ fun MoreScreen(
                         scope.launch {
                             try {
                                 // 先创建自动备份
-                                val (sqlContent, _) = backupVm.generateBackupContent()
-                                val timeFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.getDefault())
+                                val (sqlContent, _, _) = backupVm.generateBackupContent()
                                 val timestamp = timeFormat.format(Date())
                                 val autoBackupFileName = "inventory_auto_backup_before_restore_$timestamp.sql"
 
@@ -626,6 +581,32 @@ private fun MoreItem(icon: ImageVector, title: String, subtitle: String, onClick
             }
             Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurface.copy(0.3f))
         }
+    }
+}
+
+private fun extractBackupSql(stream: java.io.InputStream): String? {
+    val bytes = stream.readBytes()
+    if (bytes.isEmpty()) return null
+
+    return if (bytes.size > 2 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()) {
+        // ZIP 文件
+        try {
+            java.util.zip.ZipInputStream(bytes.inputStream()).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    if (entry.name == "backup.sql") {
+                        return zis.bufferedReader(Charsets.UTF_8).readText().takeIf { it.isNotBlank() }
+                    }
+                    entry = zis.nextEntry
+                }
+            }
+            null
+        } catch (e: Exception) {
+            null
+        }
+    } else {
+        // 直接的 SQL 文件
+        String(bytes, Charsets.UTF_8).takeIf { it.isNotBlank() }
     }
 }
 

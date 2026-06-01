@@ -18,6 +18,14 @@ data class BackupUiState(
     val isRestoring: Boolean = false
 )
 
+data class BackupStats(
+    val devices: Int,
+    val staff: Int,
+    val records: Int,
+    val categories: Int,
+    val totalDevicePrice: Double
+)
+
 class BackupViewModel(
     private val deviceRepo: DeviceRepository,
     private val staffRepo: StaffRepository,
@@ -29,29 +37,36 @@ class BackupViewModel(
     private val _uiState = MutableStateFlow(BackupUiState())
     val uiState: StateFlow<BackupUiState> = _uiState.asStateFlow()
 
-    suspend fun generateBackupContent(): Pair<String, String> {
+    suspend fun generateBackupContent(): Triple<String, String, BackupStats> {
         val devices = deviceRepo.getAll().first()
         val staff = staffRepo.getAllStaff().first()
         val records = recordRepo.getAll().first()
         val categories = categoryRepo.getAll().first()
 
         val sqlContent = buildSqlDump(devices, staff, records, categories)
+        val stats = BackupStats(
+            devices = devices.size,
+            staff = staff.size,
+            records = records.size,
+            categories = categories.size,
+            totalDevicePrice = devices.sumOf { it.price }
+        )
         val metadata = """
             {
               "backupTime": "${SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.getDefault()).format(Date())}",
               "appVersion": "1.0",
               "databaseVersion": 2,
               "statistics": {
-                "categories": ${categories.size},
-                "devices": ${devices.size},
-                "staff": ${staff.size},
-                "stockRecords": ${records.size},
-                "totalDevicePrice": ${devices.sumOf { it.price }}
+                "categories": ${stats.categories},
+                "devices": ${stats.devices},
+                "staff": ${stats.staff},
+                "stockRecords": ${stats.records},
+                "totalDevicePrice": ${stats.totalDevicePrice}
               }
             }
         """.trimIndent()
 
-        return Pair(sqlContent, metadata)
+        return Triple(sqlContent, metadata, stats)
     }
 
     fun createBackup(sqlContent: String, metadata: String, devices: Int, staff: Int, records: Int): Result<Unit> {
