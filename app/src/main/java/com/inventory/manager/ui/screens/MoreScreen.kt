@@ -22,6 +22,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.inventory.manager.InventoryApp
 import com.inventory.manager.data.database.entity.Device
@@ -29,12 +30,15 @@ import com.inventory.manager.data.database.entity.DeviceCondition
 import com.inventory.manager.data.database.entity.RecordType
 import com.inventory.manager.data.database.entity.Staff
 import com.inventory.manager.data.database.entity.StockRecord
+import com.inventory.manager.viewmodel.BackupViewModel
 import com.inventory.manager.viewmodel.DeviceViewModel
 import com.inventory.manager.viewmodel.RecordViewModel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileWriter
+import java.text.SimpleDateFormat
+import java.util.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,13 +50,59 @@ fun MoreScreen(
     val app = context.applicationContext as InventoryApp
     val deviceVm: DeviceViewModel = viewModel(factory = DeviceViewModel.factory(app))
     val recordVm: RecordViewModel = viewModel(factory = RecordViewModel.factory(app))
+    val backupVm: BackupViewModel = viewModel(factory = BackupViewModel.factory(app))
     val scope = rememberCoroutineScope()
 
     var statusMessage by remember { mutableStateOf<String?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 
+    var showBackupConfirm by remember { mutableStateOf(false) }
+    var showRestoreConfirm by remember { mutableStateOf(false) }
+    var restoreFileContent by remember { mutableStateOf<String?>(null) }
+
+    val backupState by backupVm.uiState.collectAsStateWithLifecycle()
+
     LaunchedEffect(statusMessage) {
         statusMessage?.let { snackbarHostState.showSnackbar(it); statusMessage = null }
+    }
+
+    LaunchedEffect(backupState.message) {
+        backupState.message?.let { snackbarHostState.showSnackbar(it); backupVm.clearMessage() }
+    }
+
+    val restoreLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val bytes = stream.readBytes()
+                    val content = if (bytes.size > 2 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()) {
+                        // ZIP 文件
+                        val zipInputStream = java.util.zip.ZipInputStream(bytes.inputStream())
+                        var sqlContent = ""
+                        var entry = zipInputStream.nextEntry
+                        while (entry != null) {
+                            if (entry.name == "backup.sql") {
+                                sqlContent = zipInputStream.bufferedReader(Charsets.UTF_8).readText()
+                                break
+                            }
+                            entry = zipInputStream.nextEntry
+                        }
+                        zipInputStream.close()
+                        sqlContent
+                    } else {
+                        // 直接的 SQL 文件
+                        String(bytes, Charsets.UTF_8)
+                    }
+                    restoreFileContent = content
+                    showRestoreConfirm = true
+                }
+            } catch (e: Exception) {
+                statusMessage = "读取备份文件失败: ${e.message}"
+            }
+        }
     }
 
     val importStaffLauncher = rememberLauncherForActivityResult(
@@ -341,6 +391,22 @@ fun MoreScreen(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
+            MoreItem(
+                icon = Icons.Default.DownloadForOffline,
+                title = "完整数据备份 (SQL)",
+                subtitle = if (backupState.isBackingUp) "备份中..." else "备份所有数据到文件",
+                onClick = { showBackupConfirm = true }
+            )
+
+            MoreItem(
+                icon = Icons.Default.Restore,
+                title = "数据恢复",
+                subtitle = if (backupState.isRestoring) "恢复中..." else "从备份文件恢复数据",
+                onClick = { restoreLauncher.launch(arrayOf("application/zip", "text/*", "*/*")) }
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("关于", fontWeight = FontWeight.SemiBold)
@@ -351,6 +417,162 @@ fun MoreScreen(
                 }
             }
         }
+    }
+
+    if (showBackupConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBackupConfirm = false },
+            title = { Text("确认备份") },
+            text = { Text("确认要备份所有数据吗？\n\n备份文件将保存到\nDownloads/inventory_backups/") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showBackupConfirm = false
+                        scope.launch {
+                            try {
+                                val (sqlContent, metadata) = backupVm.generateBackupContent()
+                                val devices = app.deviceRepository.getAll().first()
+                                val staff = app.staffRepository.getAllStaff().first()
+                                val records = app.recordRepository.getAll().first()
+
+                                val timeFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.getDefault())
+                                val timestamp = timeFormat.format(Date())
+                                val zipFileName = "inventory_backup_$timestamp.zip"
+
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                    val values = ContentValues().apply {
+                                        put(MediaStore.Downloads.DISPLAY_NAME, zipFileName)
+                                        put(MediaStore.Downloads.MIME_TYPE, "application/zip")
+                                        put(MediaStore.Downloads.IS_PENDING, 1)
+                                    }
+                                    val resolver = context.contentResolver
+                                    val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                                    uri?.let {
+                                        resolver.openOutputStream(it)?.use { os ->
+                                            val sqlFile = File(context.cacheDir, "backup.sql")
+                                            val metadataFile = File(context.cacheDir, "metadata.json")
+                                            sqlFile.writeText(sqlContent, Charsets.UTF_8)
+                                            metadataFile.writeText(metadata, Charsets.UTF_8)
+
+                                            val zos = java.util.zip.ZipOutputStream(os)
+                                            zos.putNextEntry(java.util.zip.ZipEntry("backup.sql"))
+                                            sqlFile.inputStream().use { it.copyTo(zos) }
+                                            zos.closeEntry()
+                                            zos.putNextEntry(java.util.zip.ZipEntry("metadata.json"))
+                                            metadataFile.inputStream().use { it.copyTo(zos) }
+                                            zos.closeEntry()
+                                            zos.close()
+
+                                            sqlFile.delete()
+                                            metadataFile.delete()
+                                        }
+                                        values.clear()
+                                        values.put(MediaStore.Downloads.IS_PENDING, 0)
+                                        resolver.update(it, values, null, null)
+                                    }
+                                } else {
+                                    val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                                    val backupDir = File(dir, "inventory_backups")
+                                    backupDir.mkdirs()
+
+                                    val sqlFile = File(backupDir, "backup_$timestamp.sql")
+                                    val metadataFile = File(backupDir, "metadata_$timestamp.json")
+                                    sqlFile.writeText(sqlContent, Charsets.UTF_8)
+                                    metadataFile.writeText(metadata, Charsets.UTF_8)
+
+                                    val zipFile = File(backupDir, zipFileName)
+                                    val zos = java.util.zip.ZipOutputStream(zipFile.outputStream())
+                                    zos.putNextEntry(java.util.zip.ZipEntry("backup.sql"))
+                                    sqlFile.inputStream().use { it.copyTo(zos) }
+                                    zos.closeEntry()
+                                    zos.putNextEntry(java.util.zip.ZipEntry("metadata.json"))
+                                    metadataFile.inputStream().use { it.copyTo(zos) }
+                                    zos.closeEntry()
+                                    zos.close()
+
+                                    sqlFile.delete()
+                                    metadataFile.delete()
+                                }
+
+                                backupVm.createBackup(sqlContent, metadata, devices.size, staff.size, records.size)
+                            } catch (e: Exception) {
+                                statusMessage = "备份失败: ${e.message}"
+                            }
+                        }
+                    }
+                ) { Text("确认备份") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBackupConfirm = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showRestoreConfirm && restoreFileContent != null) {
+        AlertDialog(
+            onDismissRequest = { showRestoreConfirm = false },
+            title = { Text("确认恢复") },
+            text = {
+                Text(
+                    """
+                    ⚠️ 警告：恢复将替换所有当前数据
+
+                    系统将在恢复前自动备份当前数据
+
+                    确认要继续恢复吗？
+                    """.trimIndent()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showRestoreConfirm = false
+                        scope.launch {
+                            try {
+                                // 先创建自动备份
+                                val (sqlContent, _) = backupVm.generateBackupContent()
+                                val timeFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.getDefault())
+                                val timestamp = timeFormat.format(Date())
+                                val autoBackupFileName = "inventory_auto_backup_before_restore_$timestamp.sql"
+
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                    val values = ContentValues().apply {
+                                        put(MediaStore.Downloads.DISPLAY_NAME, autoBackupFileName)
+                                        put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                                        put(MediaStore.Downloads.IS_PENDING, 1)
+                                    }
+                                    val resolver = context.contentResolver
+                                    val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                                    uri?.let {
+                                        resolver.openOutputStream(it)?.use { os ->
+                                            os.write(sqlContent.toByteArray(Charsets.UTF_8))
+                                        }
+                                        values.clear()
+                                        values.put(MediaStore.Downloads.IS_PENDING, 0)
+                                        resolver.update(it, values, null, null)
+                                    }
+                                } else {
+                                    val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                                    val backupDir = File(dir, "inventory_backups")
+                                    backupDir.mkdirs()
+                                    File(backupDir, autoBackupFileName).writeText(sqlContent, Charsets.UTF_8)
+                                }
+
+                                // 执行恢复
+                                backupVm.restoreFromBackup(restoreFileContent!!)
+                                restoreFileContent = null
+                            } catch (e: Exception) {
+                                statusMessage = "恢复失败: ${e.message}"
+                                restoreFileContent = null
+                            }
+                        }
+                    }
+                ) { Text("确认恢复") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRestoreConfirm = false; restoreFileContent = null }) { Text("取消") }
+            }
+        )
     }
 }
 
